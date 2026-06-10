@@ -28,6 +28,7 @@ setup(
             'lane_backstepping_pd = simplerobot_car.lane_backstepping_pd:main',
             'camera_record_node = simplerobot_car.camera_record_node:main',
             'drive_record_node = simplerobot_car.drive_record_node:main',
+            'drive_capture_node = simplerobot_car.drive_capture_node:main',
         ],
     },
 )
