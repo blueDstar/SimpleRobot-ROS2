@@ -1,0 +1,29 @@
+# ROS2 generated folders
+build/
+install/
+log/
+
+# Runtime files
+core
+videos/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Vim swap files
+*.swp
+*.swo
+*.swn
+
+# VS Code
+.vscode/
+
+# Large build binaries
+*.so
+*.o
+*.a
+
+# ROS bag files
+*.bag
