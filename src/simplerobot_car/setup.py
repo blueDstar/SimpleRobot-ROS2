@@ -14,6 +14,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
+        (os.path.join('share', package_name, 'rviz'), glob('rviz/*.rviz')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -24,6 +25,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'cmdvel_odom_node = simplerobot_car.cmdvel_odom_node:main',
+            'path_visualizer_node = simplerobot_car.path_visualizer_node:main',
+            'lidar_avoidance_node = simplerobot_car.lidar_avoidance_node:main',
             'lane_parser_node = simplerobot_car.lane_parser_node:main',
             'lane_backstepping_pd = simplerobot_car.lane_backstepping_pd:main',
             'camera_record_node = simplerobot_car.camera_record_node:main',
