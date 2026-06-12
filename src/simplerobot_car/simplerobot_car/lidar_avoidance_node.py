@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 
 import math
-import statistics
+import time
+import signal
+import sys
 
 import rclpy
 from rclpy.node import Node
@@ -19,29 +21,22 @@ class LidarAvoidanceNode(Node):
     def __init__(self):
         super().__init__('lidar_avoidance_node')
 
-        # Speed parameters
-        self.declare_parameter('linear_max', 0.18)
-        self.declare_parameter('linear_min', 0.05)
-        self.declare_parameter('angular_max', 0.90)
+        self.declare_parameter('linear_max', 0.12)
+        self.declare_parameter('linear_min', 0.04)
+        self.declare_parameter('angular_max', 0.75)
 
-        # Obstacle distance thresholds, meters
         self.declare_parameter('emergency_distance', 0.18)
         self.declare_parameter('stop_distance', 0.32)
         self.declare_parameter('slow_distance', 0.70)
 
-        # Lidar sectors, degrees
         self.declare_parameter('front_angle_deg', 35.0)
         self.declare_parameter('side_min_angle_deg', 35.0)
         self.declare_parameter('side_max_angle_deg', 110.0)
 
-        # Control gains
         self.declare_parameter('k_avoid', 0.45)
         self.declare_parameter('k_center', 0.25)
-
-        # If robot turns wrong direction, set this true
         self.declare_parameter('invert_angular', False)
 
-        # Topic names
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
 
@@ -66,6 +61,7 @@ class LidarAvoidanceNode(Node):
 
         self.latest_scan = None
         self.scan_received = False
+        self.shutting_down = False
 
         qos = QoSProfile(
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
@@ -81,12 +77,22 @@ class LidarAvoidanceNode(Node):
         )
 
         self.cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 10)
+        self.timer = self.create_timer(0.05, self.control_loop)
 
-        self.timer = self.create_timer(0.05, self.control_loop)  # 20 Hz
+        signal.signal(signal.SIGINT, self.signal_stop_handler)
+        signal.signal(signal.SIGTERM, self.signal_stop_handler)
 
-        self.get_logger().info('LiDAR obstacle avoidance node started')
+        self.get_logger().info('LiDAR avoidance node started')
         self.get_logger().info(f'Subscribe: {self.scan_topic}')
         self.get_logger().info(f'Publish:   {self.cmd_vel_topic}')
+        self.get_logger().info('Ctrl+C/SIGTERM will publish repeated zero Twist.')
+
+    def signal_stop_handler(self, signum, frame):
+        self.get_logger().warn(f'Received signal {signum}. Stopping robot now...')
+        self.safe_stop_robot()
+        self.shutting_down = True
+        if rclpy.ok():
+            rclpy.shutdown()
 
     def scan_callback(self, msg):
         self.latest_scan = msg
@@ -94,7 +100,6 @@ class LidarAvoidanceNode(Node):
 
     def get_sector_values(self, scan, min_deg, max_deg):
         values = []
-
         min_rad = math.radians(min_deg)
         max_rad = math.radians(max_deg)
 
@@ -113,8 +118,6 @@ class LidarAvoidanceNode(Node):
             return default
 
         values = sorted(values)
-
-        # Remove very small noisy tail by using lower 15% quantile instead of absolute min
         idx = max(0, int(len(values) * 0.15))
         return values[idx]
 
@@ -124,12 +127,23 @@ class LidarAvoidanceNode(Node):
         cmd.angular.z = float(angular)
         return cmd
 
-    def stop_robot(self):
-        self.cmd_pub.publish(Twist())
+    def safe_stop_robot(self):
+        stop = Twist()
+
+        # Gửi nhiều lần vì một số firmware cần nhận liên tục mới dừng chắc.
+        for _ in range(30):
+            self.cmd_pub.publish(stop)
+            time.sleep(0.03)
+
+        self.get_logger().warn('STOP command published repeatedly.')
 
     def control_loop(self):
+        if self.shutting_down:
+            self.safe_stop_robot()
+            return
+
         if not self.scan_received or self.latest_scan is None:
-            self.stop_robot()
+            self.cmd_pub.publish(Twist())
             return
 
         scan = self.latest_scan
@@ -144,15 +158,10 @@ class LidarAvoidanceNode(Node):
         left_dist = self.robust_min(left_values)
         right_dist = self.robust_min(right_values)
 
-        # Positive angular.z means turn left in ROS
-        # If right side is closer, turn left.
-        # If left side is closer, turn right.
         right_inv = 1.0 / max(right_dist, 0.05)
         left_inv = 1.0 / max(left_dist, 0.05)
 
         avoid_turn = self.k_avoid * (right_inv - left_inv)
-
-        # Extra centering: prefer side with more free space
         center_turn = self.k_center * (left_dist - right_dist)
 
         angular = avoid_turn + center_turn
@@ -161,9 +170,9 @@ class LidarAvoidanceNode(Node):
         if self.invert_angular:
             angular = -angular
 
-        # Case 1: emergency stop and rotate toward more open side
         if front_dist < self.emergency_distance:
             linear = 0.0
+
             if left_dist >= right_dist:
                 angular = abs(self.angular_max)
             else:
@@ -173,14 +182,11 @@ class LidarAvoidanceNode(Node):
                 angular = -angular
 
             self.cmd_pub.publish(self.make_cmd(linear, angular))
-            self.get_logger().warn(
-                f'EMERGENCY: front={front_dist:.2f} left={left_dist:.2f} right={right_dist:.2f}'
-            )
             return
 
-        # Case 2: obstacle close in front, stop forward motion and turn
         if front_dist < self.stop_distance:
             linear = 0.0
+
             if left_dist >= right_dist:
                 angular = abs(self.angular_max * 0.75)
             else:
@@ -192,7 +198,6 @@ class LidarAvoidanceNode(Node):
             self.cmd_pub.publish(self.make_cmd(linear, angular))
             return
 
-        # Case 3: obstacle ahead but not too close, slow down
         if front_dist < self.slow_distance:
             ratio = (front_dist - self.stop_distance) / max(
                 self.slow_distance - self.stop_distance,
@@ -203,7 +208,6 @@ class LidarAvoidanceNode(Node):
         else:
             linear = self.linear_max
 
-        # Slow down when turning hard
         if abs(angular) > 0.7 * self.angular_max:
             linear *= 0.6
 
@@ -219,9 +223,10 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        node.stop_robot()
+        node.safe_stop_robot()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

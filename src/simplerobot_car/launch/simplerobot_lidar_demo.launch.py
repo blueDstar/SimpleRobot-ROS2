@@ -28,24 +28,6 @@ def generate_launch_description():
     except Exception:
         robot_description = '<robot name="simplerobot"></robot>'
 
-
-    cmdvel_odom = Node(
-        package='simplerobot_car',
-        executable='cmdvel_odom_node',
-        name='cmdvel_odom_node',
-        output='screen',
-        parameters=[
-            {
-                'cmd_vel_topic': '/cmd_vel',
-                'odom_topic': '/odom',
-                'odom_frame': 'odom',
-                'base_frame': 'base_link',
-                'publish_tf': True,
-                'rate_hz': 30.0,
-            }
-        ]
-    )
-
     robot_state_publisher = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
@@ -90,14 +72,34 @@ def generate_launch_description():
         output='screen',
         parameters=[
             {
-                'odom_topic': '/odom',
+                'odom_topic': '/odom_raw',
                 'path_topic': '/simplerobot_path',
                 'heading_marker_topic': '/simplerobot_heading',
                 'fixed_frame': 'odom',
                 'base_frame': 'base_link',
                 'publish_tf': True,
-                'max_path_length': 3000,
+                'max_path_length': 5000,
                 'min_distance_step': 0.02,
+                'front_arrow_offset': 0.20,
+                'arrow_length': 0.45,
+                'arrow_height': 0.18,
+            }
+        ]
+    )
+
+    run_report = Node(
+        package='simplerobot_car',
+        executable='run_report_node',
+        name='run_report_node',
+        output='screen',
+        parameters=[
+            {
+                'odom_topic': '/odom_raw',
+                'cmd_vel_topic': '/cmd_vel',
+                'save_root': '/root/yahboomcar_ws/demo_reports',
+                'track_width': 0.18,
+                'wheel_radius': 0.0325,
+                'sample_rate': 10.0,
             }
         ]
     )
@@ -111,9 +113,9 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        cmdvel_odom,
         robot_state_publisher,
         path_visualizer,
+        run_report,
         lidar_avoidance,
         rviz,
     ])

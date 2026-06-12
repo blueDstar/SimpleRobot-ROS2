@@ -25,6 +25,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'run_report_node = simplerobot_car.run_report_node:main',
             'cmdvel_odom_node = simplerobot_car.cmdvel_odom_node:main',
             'path_visualizer_node = simplerobot_car.path_visualizer_node:main',
             'lidar_avoidance_node = simplerobot_car.lidar_avoidance_node:main',

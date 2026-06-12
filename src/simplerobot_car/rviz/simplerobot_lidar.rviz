@@ -14,10 +14,6 @@ Visualization Manager:
       Plane: XY
       Reference Frame: odom
 
-    - Class: rviz_default_plugins/TF
-      Name: TF
-      Enabled: true
-
     - Class: rviz_default_plugins/RobotModel
       Name: RobotModel
       Enabled: true
@@ -37,28 +33,24 @@ Visualization Manager:
         G: 0
         B: 0
 
-    - Class: rviz_default_plugins/Odometry
-      Name: Odometry
-      Enabled: true
-      Topic:
-        Value: /odom
-      Shape: Arrow
-      Keep: 100
-
     - Class: rviz_default_plugins/Path
       Name: SimpleRobot Path
       Enabled: true
       Topic:
         Value: /simplerobot_path
       Line Style: Lines
-      Line Width: 0.05
+      Line Width: 0.06
       Pose Style: None
 
     - Class: rviz_default_plugins/Marker
-      Name: Heading Arrow
+      Name: Current Heading Arrow
       Enabled: true
       Marker Topic:
         Value: /simplerobot_heading
+
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: false
 
     - Class: rviz_default_plugins/Map
       Name: Map
