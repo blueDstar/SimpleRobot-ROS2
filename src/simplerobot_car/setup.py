@@ -25,6 +25,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'lane_lidar_follower_node = simplerobot_car.lane_lidar_follower_node:main',
+            'line_camera_target_node = simplerobot_car.line_camera_target_node:main',
             'run_report_node = simplerobot_car.run_report_node:main',
             'cmdvel_odom_node = simplerobot_car.cmdvel_odom_node:main',
             'path_visualizer_node = simplerobot_car.path_visualizer_node:main',

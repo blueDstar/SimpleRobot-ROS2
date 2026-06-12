@@ -8,9 +8,11 @@ from datetime import datetime
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Twist
+from sensor_msgs.msg import LaserScan
 
 
 def yaw_from_quaternion(q):
@@ -25,21 +27,29 @@ class RunReportNode(Node):
 
         self.declare_parameter('odom_topic', '/odom_raw')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
+        self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('save_root', '/root/yahboomcar_ws/demo_reports')
 
-        # Thông số ước lượng vận tốc bánh.
-        # Cần chỉnh theo xe thật nếu muốn chính xác hơn.
-        self.declare_parameter('track_width', 0.18)    # khoảng cách 2 cụm bánh trái-phải, m
-        self.declare_parameter('wheel_radius', 0.0325) # bán kính bánh, m
+        self.declare_parameter('track_width', 0.18)
+        self.declare_parameter('wheel_radius', 0.0325)
         self.declare_parameter('sample_rate', 10.0)
+
+        self.declare_parameter('obstacle_max_range', 1.5)
+        self.declare_parameter('obstacle_decimation', 8)
+        self.declare_parameter('max_obstacle_points', 20000)
 
         self.odom_topic = str(self.get_parameter('odom_topic').value)
         self.cmd_vel_topic = str(self.get_parameter('cmd_vel_topic').value)
+        self.scan_topic = str(self.get_parameter('scan_topic').value)
         self.save_root = str(self.get_parameter('save_root').value)
 
         self.track_width = float(self.get_parameter('track_width').value)
         self.wheel_radius = float(self.get_parameter('wheel_radius').value)
         self.sample_rate = float(self.get_parameter('sample_rate').value)
+
+        self.obstacle_max_range = float(self.get_parameter('obstacle_max_range').value)
+        self.obstacle_decimation = int(self.get_parameter('obstacle_decimation').value)
+        self.max_obstacle_points = int(self.get_parameter('max_obstacle_points').value)
 
         timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         self.run_dir = os.path.join(self.save_root, timestamp)
@@ -57,6 +67,13 @@ class RunReportNode(Node):
         self.cmd_ok = False
 
         self.rows = []
+        self.obstacle_points = []
+
+        qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=5
+        )
 
         self.odom_sub = self.create_subscription(
             Odometry,
@@ -72,13 +89,21 @@ class RunReportNode(Node):
             20
         )
 
+        self.scan_sub = self.create_subscription(
+            LaserScan,
+            self.scan_topic,
+            self.scan_callback,
+            qos
+        )
+
         self.timer = self.create_timer(1.0 / self.sample_rate, self.sample)
 
         self.get_logger().info('Run report node started')
-        self.get_logger().info(f'Odom topic: {self.odom_topic}')
-        self.get_logger().info(f'Cmd topic:  {self.cmd_vel_topic}')
-        self.get_logger().info(f'Save dir:   {self.run_dir}')
-        self.get_logger().info('Press Ctrl+C after robot run to save CSV and PNG report.')
+        self.get_logger().info(f'Odom: {self.odom_topic}')
+        self.get_logger().info(f'Cmd:  {self.cmd_vel_topic}')
+        self.get_logger().info(f'Scan: {self.scan_topic}')
+        self.get_logger().info(f'Save: {self.run_dir}')
+        self.get_logger().info('Ctrl+C will save CSV + PNG report.')
 
     def odom_callback(self, msg):
         self.latest_x = float(msg.pose.pose.position.x)
@@ -91,26 +116,42 @@ class RunReportNode(Node):
         self.latest_w = float(msg.angular.z)
         self.cmd_ok = True
 
+    def scan_callback(self, msg):
+        if not self.odom_ok:
+            return
+
+        if len(self.obstacle_points) >= self.max_obstacle_points:
+            return
+
+        angle = msg.angle_min
+
+        for i, r in enumerate(msg.ranges):
+            if i % max(self.obstacle_decimation, 1) != 0:
+                angle += msg.angle_increment
+                continue
+
+            if math.isfinite(r) and msg.range_min < r < min(msg.range_max, self.obstacle_max_range):
+                gx = self.latest_x + r * math.cos(self.latest_yaw + angle)
+                gy = self.latest_y + r * math.sin(self.latest_yaw + angle)
+                self.obstacle_points.append((gx, gy, time.time() - self.start_time))
+
+                if len(self.obstacle_points) >= self.max_obstacle_points:
+                    break
+
+            angle += msg.angle_increment
+
     def estimate_wheel_speeds(self, v, w):
-        # Differential/skid-steer approximation:
-        # left_linear = v - w * L/2
-        # right_linear = v + w * L/2
         left_linear = v - w * self.track_width / 2.0
         right_linear = v + w * self.track_width / 2.0
 
         if self.wheel_radius <= 1e-6:
-            fl = fr = rl = rr = 0.0
+            left_rad_s = 0.0
+            right_rad_s = 0.0
         else:
             left_rad_s = left_linear / self.wheel_radius
             right_rad_s = right_linear / self.wheel_radius
 
-            # 4-wheel skid/differential:
-            fl = left_rad_s
-            rl = left_rad_s
-            fr = right_rad_s
-            rr = right_rad_s
-
-        return fl, fr, rl, rr, left_linear, right_linear
+        return left_rad_s, right_rad_s, left_rad_s, right_rad_s, left_linear, right_linear
 
     def sample(self):
         t = time.time() - self.start_time
@@ -138,12 +179,10 @@ class RunReportNode(Node):
         })
 
     def save_csv(self):
-        csv_path = os.path.join(self.run_dir, 'run_log.csv')
-
         if not self.rows:
-            self.get_logger().warn('No data to save.')
             return None
 
+        csv_path = os.path.join(self.run_dir, 'run_log.csv')
         fieldnames = list(self.rows[0].keys())
 
         with open(csv_path, 'w', newline='') as f:
@@ -151,7 +190,14 @@ class RunReportNode(Node):
             writer.writeheader()
             writer.writerows(self.rows)
 
+        obs_path = os.path.join(self.run_dir, 'obstacle_points.csv')
+        with open(obs_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['x_m', 'y_m', 'time_s'])
+            writer.writerows(self.obstacle_points)
+
         self.get_logger().info(f'Saved CSV: {csv_path}')
+        self.get_logger().info(f'Saved obstacle CSV: {obs_path}')
         return csv_path
 
     def save_plot(self):
@@ -177,15 +223,24 @@ class RunReportNode(Node):
         rl = [r['wheel_rl_radps'] for r in self.rows]
         rr = [r['wheel_rr_radps'] for r in self.rows]
 
-        fig = plt.figure(figsize=(14, 10))
+        fig = plt.figure(figsize=(15, 10))
 
         ax1 = fig.add_subplot(2, 2, 1)
-        ax1.plot(x, y, linewidth=2)
-        ax1.set_title('Robot path from odom_raw')
+
+        if self.obstacle_points:
+            ox = [p[0] for p in self.obstacle_points]
+            oy = [p[1] for p in self.obstacle_points]
+            ax1.scatter(ox, oy, s=3, alpha=0.35, label='LiDAR obstacle points')
+
+        ax1.plot(x, y, linewidth=2.5, label='robot path')
+        ax1.scatter([x[0]], [y[0]], s=60, marker='o', label='start')
+        ax1.scatter([x[-1]], [y[-1]], s=60, marker='x', label='end')
+        ax1.set_title('Robot path + LiDAR obstacle points')
         ax1.set_xlabel('x (m)')
         ax1.set_ylabel('y (m)')
         ax1.axis('equal')
         ax1.grid(True)
+        ax1.legend()
 
         ax2 = fig.add_subplot(2, 2, 2)
         ax2.plot(t, v, label='linear.x')
@@ -208,10 +263,8 @@ class RunReportNode(Node):
         ax3.grid(True)
 
         ax4 = fig.add_subplot(2, 2, 4)
-        speed_abs = [abs(val) for val in v]
-        omega_abs = [abs(val) for val in w]
-        ax4.plot(t, speed_abs, label='|linear.x|')
-        ax4.plot(t, omega_abs, label='|angular.z|')
+        ax4.plot(t, [abs(val) for val in v], label='|linear.x|')
+        ax4.plot(t, [abs(val) for val in w], label='|angular.z|')
         ax4.set_title('Absolute command profile')
         ax4.set_xlabel('time (s)')
         ax4.set_ylabel('absolute value')
