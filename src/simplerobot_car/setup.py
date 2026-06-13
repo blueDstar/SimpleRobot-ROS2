@@ -25,6 +25,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'motor_calib_gui_node = simplerobot_car.motor_calib_gui_node:main',
             'lane_lidar_follower_node = simplerobot_car.lane_lidar_follower_node:main',
             'line_camera_target_node = simplerobot_car.line_camera_target_node:main',
             'run_report_node = simplerobot_car.run_report_node:main',
